@@ -1,3 +1,4 @@
+// @ts-nocheck
 var n = {};
 n.base10 = "0123456789", n.base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", n.luhn = function (e) {
     for (var t = e.length - 1, n = 0; t >= 0;) n += parseInt(e.substr(t, 1), 10), t -= 2;
@@ -243,16 +244,20 @@ var o = {
         return null == i ? "" : o.encryptWithCipher(e, t, i, r)
     }
 }
-module.exports = function encrypt(e,t,PIE_L,PIE_E,PIE_K,PIE_key_id,PIE_phase){
+type encryptedPan = string
+type encryptedCvv = string
+type integrityCheck = string
+type encryptedWalmartCard = [encryptedPan, encryptedCvv, integrityCheck]
+export default function encrypt(pan:string,cvv:string,PIE_L:string,PIE_E:string,PIE_K:string,PIE_key_id:string,PIE_phase:string):encryptedWalmartCard{
     PIE = {L: parseInt(PIE_L), E: parseInt(PIE_E), K: PIE_K, key_id: PIE_key_id, phase: parseInt(PIE_phase)}
-    var a_var = n.distill(e)
-    var i_var = n.distill(t)
+    var a_var = n.distill(pan)
+    var i_var = n.distill(cvv)
     var c_var = a_var.substr(0, PIE.L) + a_var.substring(a_var.length - PIE.E)
     var u_var = n.luhn(a_var)
     var s_var = a_var.substring(PIE.L + 1, a_var.length - PIE.E)
     var d_var = o.encrypt(s_var + i_var, c_var, PIE.K, 10)
     var l_var = a_var.substr(0, PIE.L) + "0" + d_var.substr(0, d_var.length - i_var.length) + a_var.substring(a_var.length - PIE.E)
-    var f_var = n.reformat(n.fixluhn(l_var, PIE.L, u_var), e)
-    var p_var = n.reformat(d_var.substring(d_var.length - i_var.length), t)
+    var f_var = n.reformat(n.fixluhn(l_var, PIE.L, u_var), pan)
+    var p_var = n.reformat(d_var.substring(d_var.length - i_var.length), cvv)
     return [f_var, p_var, n.integrity(PIE.K, f_var, p_var)]
 }
