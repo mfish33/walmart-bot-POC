@@ -3,17 +3,27 @@ import fetchCookie from 'fetch-cookie'
 import walmartEncrypt from './encrypt'
 import Requester from './Requester'
 
-const fetch = fetchCookie(nodeFetch)
-
 const mobileUserAgent = 'Walmart/2011052309 CFNetwork/1206 Darwin/20.1.0'
 
-export interface WalmartBotConfig{
-    url:string
+export interface WalmartBotConfig {
+    items:item[]
     email:string
     password:string
     cvv:string,
     pollTime:number,
     oldApi:boolean
+    botName?:string,
+    devMode?:boolean
+}
+
+export interface item{
+    url:string
+    quantity:number,
+    keepBuying?:boolean
+}
+
+export interface itemWithID extends item {
+    id:string
 }
 
 export class WalmartBot{
@@ -21,6 +31,8 @@ export class WalmartBot{
     private cardData:any = {}
     private shippingData:any = {}
     private PIE:any = {}
+    // Create fetch instance to hold cookies for this bot
+    private fetch = fetchCookie(nodeFetch)
  
     constructor(private config:WalmartBotConfig){
         this.init()
@@ -34,33 +46,46 @@ export class WalmartBot{
 
     async runBot() {
         try{
-            //console.time('tester')
-            let productId:string = ''
-            while(!productId) {
-                productId = await this.getId(this.config.url)
-                if(!productId) {
+
+            let products:itemWithID[] = []
+            while(!products.length) {
+                products = (await Promise.all(
+                    this.config.items.map(item => this.getId(item))
+                )).filter(product => product.id)
+                if(!products.length) {
                     // Easiest way to do a sleep in js
                     await new Promise(resolve => setTimeout(resolve,this.config.pollTime))
                 }
             }
-            await this.addToCart(productId)
+
+            await Promise.allSettled(products.map(product => this.addToCart(product)))
             await this.checkout()
-           // console.timeEnd('tester')
-            
-            console.log(`The bot successfully checked out with ${this.config.url}`)
+
+            console.log(`The bot successfully checked out with:\n${products.map(p=>p.url).join('\n')}`)
+
+            if(products.length < this.config.items.length) {
+                let productUrls = products.map(product => product.url)
+                this.config.items = this.config.items.filter(item => !productUrls.includes(item.url) && !item.keepBuying)
+                console.log(`continue trying for:\n${this.config.items.map(p=>p.url).join('\n')}`)
+            }
+
         } catch(e) {
-            console.log(e)
-            console.log('kicking bot back to polling')
+            console.error(e)
+            console.error('kicking bot back to polling')
             this.runBot()
-        }  
+        }
+        
+        console.log(`${this.config.botName ? this.config.botName : 'Walmart'} bot finished executing`)
     }
     
     async login() {
-        let loginP = () => fetch("https://www.walmart.com/account/electrode/api/identity/password",{
+        let loginP = () => this.fetch("https://www.walmart.com/account/electrode/api/identity/password",{
             method:'POST',
             headers:{
                 "User-Agent":mobileUserAgent,
-                "Content-Type":"text/plain;charset=UTF-8"
+                "Content-Type":"text/plain;charset=UTF-8",
+                'mobile-platform':'ios',
+                'mobile-app-version':'20.41.5'
             },
             body:JSON.stringify({
                 email:this.config.email,
@@ -71,12 +96,12 @@ export class WalmartBot{
     }
 
     async getUserInfo() {
-        let cardInfoP = () => fetch('https://www.walmart.com//api/checkout-customer/:CID/credit-card',{
+        let cardInfoP = () => this.fetch('https://www.walmart.com//api/checkout-customer/:CID/credit-card',{
             headers:{
                 'User-Agent':mobileUserAgent
             }
         })
-        let shippingInfoP = () => fetch('https://www.walmart.com/api/checkout-customer/:CID/shipping-address',{
+        let shippingInfoP = () => this.fetch('https://www.walmart.com/api/checkout-customer/:CID/shipping-address',{
             headers:{
                 'User-Agent':mobileUserAgent
             }
@@ -89,8 +114,8 @@ export class WalmartBot{
         this.shippingData = shippingData[0]
     }
     
-    async addToCart(offerId:string) {
-        const addToCartP = () => fetch("https://api.mobile.walmart.com/v1/cart/items",{
+    async addToCart(item:itemWithID) {
+        const addToCartP = () => this.fetch("https://api.mobile.walmart.com/v1/cart/items",{
             method:'POST',
             headers:{
                 "User-Agent":mobileUserAgent,
@@ -104,33 +129,33 @@ export class WalmartBot{
                     "postalCode": this.shippingData.postalCode,
                     "state": this.shippingData.state
                 },
-                "offerId": offerId,
-                
-                "quantity": 1,
+                "offerId": item.id,
+                "quantity": item.quantity,
             })
         })
         await Requester.create(addToCartP,'json')
     }
     
-    async getId(url:string) {
-        let pageReq = await fetch(url,{
+    async getId(item:item):Promise<itemWithID> {
+        // Use nodeFetch to not send mobile session cookies
+        let pageReq = await nodeFetch(item.url,{
             headers:{
                 "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.69 Safari/537.36"
             }
         })
         let text = await pageReq.text()
         if(!text.match('Add to cart')) {
-            return ''
+            return { id:'' , ...item }
         }
-        // 1 since it is getting the id
         let offerId = text.match(/"offerId":"((?:\d|\w)+)/)
         // null check since match can return null instead of empty array
-        return offerId ? offerId[1] : ''
+        // 1 since it is getting the id
+        return offerId ? { id:offerId[1],...item } : { id:'' , ...item }
     }
     
     async checkout() {
     
-        let contractP = () => fetch('https://www.walmart.com/api/checkout/v3/contract',{
+        let contractP = () => this.fetch('https://www.walmart.com/api/checkout/v3/contract',{
             method:'POST',
             headers:{
                 "User-Agent":mobileUserAgent,
@@ -147,7 +172,7 @@ export class WalmartBot{
               })
         })
     
-        const PIEDataP = () => fetch('https://securedataweb.walmart.com/pie/v1/wmcom_us_vtg_pie/getkey.js?bust='+(new Date).getTime(),{
+        const PIEDataP = () => this.fetch('https://securedataweb.walmart.com/pie/v1/wmcom_us_vtg_pie/getkey.js?bust='+(new Date).getTime(),{
             headers:{
                 'User-Agent':mobileUserAgent
             }
@@ -165,7 +190,7 @@ export class WalmartBot{
 
         let productCheckoutId = contract.items[0].id
     
-        let submitItemsP = () => fetch('https://www.walmart.com/api/checkout/v3/contract/:PCID/fulfillment',{
+        let submitItemsP = () => this.fetch('https://www.walmart.com/api/checkout/v3/contract/:PCID/fulfillment',{
             method:'POST',
             headers:{
                 "User-Agent":mobileUserAgent,
@@ -186,7 +211,7 @@ export class WalmartBot{
     
     
     
-        let submitShippingAddressP = () => fetch('https://www.walmart.com/api/checkout/v3/contract/:PCID/shipping-address',{
+        let submitShippingAddressP = () => this.fetch('https://www.walmart.com/api/checkout/v3/contract/:PCID/shipping-address',{
             method:'POST',
             headers:{
                 'User-Agent':mobileUserAgent,
@@ -210,7 +235,7 @@ export class WalmartBot{
     
         const [ encryptedPan, encryptedCvv, integrityCheck ] = walmartEncrypt('4111111111111111', this.config.cvv, this.PIE.L, this.PIE.E, this.PIE.K, this.PIE.key_id, this.PIE.phase)
     
-        let submitPaymentP = () => fetch('https://www.walmart.com/api/checkout/v3/contract/:PCID/payment',{
+        let submitPaymentP = () => this.fetch('https://www.walmart.com/api/checkout/v3/contract/:PCID/payment',{
             method:'POST',
             headers:{
                 'User-Agent':mobileUserAgent,
@@ -274,7 +299,7 @@ export class WalmartBot{
             ]
         }
     
-        let submitOrderP = () => fetch('https://www.walmart.com/api/checkout/v3/contract/:PCID/order',{
+        let submitOrderP = () => this.fetch('https://www.walmart.com/api/checkout/v3/contract/:PCID/order',{
             method:'PUT',
             headers:{
                 "content-type": "application/json",
@@ -285,9 +310,10 @@ export class WalmartBot{
             body:JSON.stringify(submitOrderBody)
         })
 
-        await Requester.create(submitOrderP,'json')
+        if(!this.config.devMode) {
+            await Requester.create(submitOrderP,'json')
+        }
     
     }
 
 }
-
